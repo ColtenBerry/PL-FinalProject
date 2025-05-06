@@ -12,7 +12,7 @@ A command-line calculator for evaluating set expressions, written in Haskell.
 - **Cartesian product**: `A cross B` 
 - **Power set**: `powerset A` returns a set of all possible subsets of A
 - **Subset test**: `A subset B` use keyword subset
-- **Membership test**: `x ∈ A`
+- **Membership test**: `x in A`
 - **Cardinality**: `card(A)` (ASCII keywordword)
 - **Interactive REPL**: Type expressions, view results, use `:help` and `:quit`
 
