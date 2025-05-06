@@ -1,16 +1,14 @@
-Project 4: Set Calculator
+Project 2: Strict Set Calculator
 =====================
-
 
 > {-# LANGUAGE GADTs #-}
 > {-# OPTIONS_GHC -Wall #-}
-> 
-> module Calc where
 
+> module Calc where
 
 > import           Parsing2 hiding ((<|>))
 > import qualified Data.Map as M
-> import Text.Parsec (Parsec, ParseError, (<|>), try, parserFail)
+> import Text.Parsec (Parsec, ParseError, (<|>), try, parserFail, char, letter)
 > import qualified Text.Parsec as Parsec
 > import Text.Parsec.String (Parser)
 > import Text.Parsec.Expr
@@ -20,13 +18,14 @@ Project 4: Set Calculator
 > import Data.List (intercalate, nub, sort, subsequences)
 > import Data.Set (Set)
 > import qualified Data.Set as S
-
+> import Data.Char (isAlpha)
 
 -- Define the Expr type for the AST
 
 > data Expr
 >     = Set [Expr]
 >     | Num Double
+>     | CharElem Char
 >     | Union Expr Expr
 >     | Intersection Expr Expr
 >     | Difference Expr Expr
@@ -37,14 +36,22 @@ Project 4: Set Calculator
 >     | IsSubset Expr Expr
 >     | IsMember Expr Expr
 >     | Card Expr
->     deriving (Show, Eq)
-
+>     deriving (Show, Eq, Ord)
 
 -- Lexer setup
 
 > lexer :: TokenParser ()
 > lexer = makeTokenParser emptyDef
 
+-- Parser for set literals (including empty set)
+
+> parsesetliteral :: Parser Expr
+> parsesetliteral = do
+>     reservedOp lexer "{"
+>     (do reservedOp lexer "}" >> return (Set [])
+>      <|> do elements <- sepBy parseexpr (reservedOp lexer ",")
+>             reservedOp lexer "}"
+>             return (Set elements))
 
 -- Parser for expressions
 
@@ -52,157 +59,225 @@ Project 4: Set Calculator
 > parseexpr = buildExpressionParser table parseterm
 >     where
 >         table = [ [ Infix (reservedOp lexer "union" >> return Union) AssocLeft
->          , Infix (reservedOp lexer "intersect" >> return Intersection) AssocLeft
->          , Infix (reservedOp lexer "minus" >> return Difference) AssocLeft
->          , Infix (reservedOp lexer "symdiff" >> return SymDiff) AssocLeft
->          , Infix (reservedOp lexer "cross" >> return Cartesian) AssocLeft
->          ]]
+>                  , Infix (reservedOp lexer "intersect" >> return Intersection) AssocLeft
+>                  , Infix (reservedOp lexer "minus" >> return Difference) AssocLeft
+>                  , Infix (reservedOp lexer "symdiff" >> return SymDiff) AssocLeft
+>                  , Infix (reservedOp lexer "cross" >> return Cartesian) AssocLeft
+>                  ]]
 
-
--- Parser for terms (numbers, sets, or parenthesized expressions)
+-- Parser for terms
 
 > parseterm :: Parser Expr
 > parseterm = parens lexer parseexpr
 >         <|> try parsesetliteral
+>         <|> try parseChar
 >         <|> (Num . either fromIntegral id <$> naturalOrFloat lexer)
->         <|> (PowerSet <$> (reserved lexer "P" >> parens lexer parseexpr))
+>         <|> (PowerSet <$> (reserved lexer "powerset" >> parens lexer parseexpr))
 >         <|> (Complement <$> (reservedOp lexer "'" >> parseterm))
->         <|> (IsSubset <$> (parseterm <* reservedOp lexer "⊆") <*> parseterm)
->         <|> (IsMember <$> (parseterm <* reservedOp lexer "∈") <*> parseterm)
->         <|> (Card <$> (reservedOp lexer "|" *> parseexpr <* reservedOp lexer "|"))
+>         <|> (IsSubset <$> (parseterm <* reservedOp lexer "subset") <*> parseterm)
+>         <|> (IsMember <$> (parseterm <* reservedOp lexer "in") <*> parseterm)
+>         <|> (Card <$> (reserved lexer "card" >> parens lexer parseexpr))
 
+> parseChar :: Parser Expr
+> parseChar = do
+>     c <- between (char '\'') (char '\'') letter
+>     return $ CharElem c
 
--- Parser for set literals like {1, 2, 3}
+-- Evaluator
 
-> parsesetliteral :: Parser Expr
-> parsesetliteral = do
->     reservedOp lexer "{"
->     elements <- sepBy parseexpr (reservedOp lexer ",")
->     reservedOp lexer "}"
->     return $ Set elements
-
-
--- Evaluator for expressions
-
-> eval :: Expr -> Either String (Set Double)
-> eval (Num x) = Right $ S.singleton x
+> eval :: Expr -> Either String Expr
+> eval (Set []) = Right $ Set []
+> eval (Num x) = Right $ Num x
+> eval (CharElem c) = Right $ CharElem c
 > eval (Set elements) = do
 >     evaluated <- mapM eval elements
->     Right $ S.unions evaluated
-> eval (Union a b) = S.union <$> eval a <*> eval b
-> eval (Intersection a b) = S.intersection <$> eval a <*> eval b
-> eval (Difference a b) = S.difference <$> eval a <*> eval b
+>     Right $ Set evaluated
+
+> eval (Union a b) = do
+>     a' <- eval a
+>     b' <- eval b
+>     case (a', b') of
+>         (Set [], Set []) -> Right $ Set []
+>         (Set [], y) -> Right y
+>         (x, Set []) -> Right x
+>         (Set xs, Set ys) -> Right $ Set (nub (sort (xs ++ ys)))
+>         (Set xs, y) -> Right $ Set (nub (sort (xs ++ [y])))
+>         (x, Set ys) -> Right $ Set (nub (sort (x:ys)))
+>         (x, y) -> Right $ Set (nub (sort [x, y]))
+
+> eval (Intersection a b) = do
+>     a' <- eval a
+>     b' <- eval b
+>     case (a', b') of
+>         (Set [], _) -> Right $ Set []
+>         (_, Set []) -> Right $ Set []
+>         (Set xs, Set ys) -> Right $ Set (filter (`elem` ys) xs)
+>         (Set xs, y) -> Right $ Set (filter (== y) xs)
+>         (x, Set ys) -> Right $ Set (filter (== x) ys)
+>         (x, y) -> Right $ if x == y then x else Set []
+
+> eval (Difference a b) = do
+>     a' <- eval a
+>     b' <- eval b
+>     case (a', b') of
+>         (Set [], _) -> Right $ Set []
+>         (x, Set []) -> Right x
+>         (Set xs, Set ys) -> Right $ Set (filter (`notElem` ys) xs)
+>         (Set xs, y) -> Right $ Set (filter (/= y) xs)
+>         (x, Set ys) -> Right $ if x `elem` ys then Set [] else x
+>         (x, y) -> Right $ if x == y then Set [] else x
+
 > eval (SymDiff a b) = do
 >     a' <- eval a
 >     b' <- eval b
->     Right $ S.union (S.difference a' b') (S.difference b' a')
+>     case (a', b') of
+>         (Set [], Set []) -> Right $ Set []
+>         (Set [], y) -> Right y
+>         (x, Set []) -> Right x
+>         (Set xs, Set ys) -> Right $ Set (filter (`notElem` ys) xs ++ filter (`notElem` xs) ys)
+>         (Set xs, y) -> Right $ Set (filter (/= y) xs ++ if y `elem` xs then [] else [y])
+>         (x, Set ys) -> Right $ Set (if x `elem` ys then filter (/= x) ys else x : filter (/= x) ys)
+>         (x, y) -> Right $ if x == y then Set [] else Set [x, y]
+
 > eval (Cartesian a b) = do
 >     a' <- eval a
 >     b' <- eval b
->     -- Encode pairs as x*1000 + y to keep Set Double type
->     Right $ S.fromList [x * 1000 + y | x <- S.toList a', y <- S.toList b']
+>     case (a', b') of
+>         (Set [], _) -> Right $ Set []
+>         (_, Set []) -> Right $ Set []
+>         (Set xs, Set ys) -> Right $ Set [Set [x, y] | x <- xs, y <- ys]
+>         (Set xs, y) -> Right $ Set [Set [x, y] | x <- xs]
+>         (x, Set ys) -> Right $ Set [Set [x, y] | y <- ys]
+>         (x, y) -> Right $ Set [Set [x, y]]
+
 > eval (PowerSet a) = do
 >     a' <- eval a
->     -- Return cardinalities of subsets instead of actual subsets
->     Right $ S.fromList [fromIntegral (length subset) | subset <- subsequences (S.toList a')]
-> eval (Complement a) = do
->     a' <- eval a
->     Left "Complement operation requires a defined universe"
+>     case a' of
+>         Set [] -> Right $ Set [Set []]
+>         Set xs -> Right $ Set [Set ys | ys <- subsequences xs]
+>         x -> Right $ Set [Set [], Set [x]]
+
+> eval (Complement _) = Left "Complement requires universe definition"
+
 > eval (IsSubset a b) = do
 >     a' <- eval a
 >     b' <- eval b
->     Right $ if S.isSubsetOf a' b' then S.singleton 1 else S.singleton 0
+>     case (a', b') of
+>         (Set [], _) -> Right (Num 1)
+>         (_, Set []) -> case a' of
+>                         Set [] -> Right (Num 1)
+>                         _ -> Right (Num 0)
+>         (Set xs, Set ys) -> Right (Num (if all (\x -> x `elem` ys) xs then 1 else 0))
+>         (x, Set ys) -> Right (Num (if x `elem` ys then 1 else 0))
+>         _ -> Right (Num 0)
+
 > eval (IsMember x a) = do
 >     x' <- eval x
 >     a' <- eval a
->     case S.toList x' of
->         [val] -> Right $ if S.member val a' then S.singleton 1 else S.singleton 0
->         _ -> Left "Left operand of ∈ must be a single element"
+>     case a' of
+>         Set [] -> Right (Num 0)
+>         Set ys -> Right (Num (if x' `elem` ys then 1 else 0))
+>         y -> Right (Num (if x' == y then 1 else 0))
+
 > eval (Card a) = do
 >     a' <- eval a
->     Right $ S.singleton $ fromIntegral $ S.size a'
+>     case a' of
+>         Set xs -> do
+>             evaluated <- mapM eval xs
+>             let unique = nub evaluated
+>             return $ Num (fromIntegral (length unique) :: Double)
+>         _ -> Right $ Num 1.0
 
-
--- Pretty-print expressions
+-- Pretty-printing
 
 > prettyprint :: Expr -> String
-> prettyprint (Num x) = show x
+> prettyprint (Num x) 
+>     | x == fromIntegral (round x) = show (round x)
+>     | otherwise = show x
+> prettyprint (CharElem c) = "'" ++ [c] ++ "'"
+> prettyprint (Set []) = "{}"
 > prettyprint (Set elements) = "{" ++ intercalate ", " (map prettyprint elements) ++ "}"
-> prettyprint (Union a b) = prettyprint a ++ " ∪ " ++ prettyprint b
-> prettyprint (Intersection a b) = prettyprint a ++ " ∩ " ++ prettyprint b
-> prettyprint (Difference a b) = prettyprint a ++ " \\ " ++ prettyprint b
-> prettyprint (SymDiff a b) = prettyprint a ++ " Δ " ++ prettyprint b
-> prettyprint (Cartesian a b) = prettyprint a ++ " × " ++ prettyprint b
-> prettyprint (PowerSet a) = "P(" ++ prettyprint a ++ ")"
+> prettyprint (Union a b) = prettyprint a ++ " union " ++ prettyprint b
+> prettyprint (Intersection a b) = prettyprint a ++ " intersect " ++ prettyprint b
+> prettyprint (Difference a b) = prettyprint a ++ " minus " ++ prettyprint b
+> prettyprint (SymDiff a b) = prettyprint a ++ " symdiff " ++ prettyprint b
+> prettyprint (Cartesian a b) = prettyprint a ++ " cross " ++ prettyprint b
+> prettyprint (PowerSet a) = "powerset(" ++ prettyprint a ++ ")"
 > prettyprint (Complement a) = prettyprint a ++ "'"
-> prettyprint (IsSubset a b) = prettyprint a ++ " ⊆ " ++ prettyprint b
-> prettyprint (IsMember x a) = prettyprint x ++ " ∈ " ++ prettyprint a
-> prettyprint (Card a) = "|" ++ prettyprint a ++ "|"
-
-
--- Format set for display
-
-> formatSet :: Set Double -> String
-> formatSet s = "{" ++ intercalate ", " (map show (S.toList s)) ++ "}"
-
+> prettyprint (IsSubset a b) = 
+>     case eval (IsSubset a b) of
+>         Right (Num 1) -> "true"
+>         Right (Num 0) -> "false"
+>         _ -> "error"
+> prettyprint (IsMember x a) = 
+>     case eval (IsMember x a) of
+>         Right (Num 1) -> "true"
+>         Right (Num 0) -> "false"
+>         _ -> "error"
+> prettyprint (Card a) = 
+>     case eval (Card a) of
+>         Right (Num n) -> show (floor n)  
+>         _ -> "error"
 
 -- Main calculator function
 
 > calc :: String -> String
 > calc input = case Parsec.parse parseexpr "" input of
 >     Left err -> show err
->     Right expr -> prettyprint expr ++ "\n  = " ++ case eval expr of
+>     Right expr -> case eval expr of
 >         Left err -> err
->         Right val -> formatSet val
-
+>         Right val -> prettyprint val
 
 -- Description shown at startup
 
 > description :: String
 > description = unlines
->  [ "Welcome to the Text-Based Set Calculator!"
->  , "This calculator supports the following set operations (all lowercase):"
->  , "  - Set literals: {1, 2, 3}"
->  , "  - union: A union B"
->  , "  - intersect: A intersect B"
->  , "  - minus: A minus B (set difference)"
->  , "  - symdiff: A symdiff B (symmetric difference)"
->  , "  - cross: A cross B (Cartesian product - encoded as x*1000 + y)"
->  , "  - powerset(A): All subsets of A (returns subset sizes)"
->  , "  - cardinality(A): Number of elements in A"
->  , "  - subset: A subset B (returns 1 if true, 0 if false)"
->  , "  - in: x in A (membership test)"
->  , "Special commands: :help, :quit"
->  , "Type an expression to begin (e.g., {1,2} union {2,3})"
->  ]
+>   [ "Set Calculator REPL"
+>   , "Type set expressions to evaluate them"
+>   , "Available commands:"
+>   , "  :help   - Show this help message"
+>   , "  :quit   - Exit the calculator"
+>   , ""
+>   , "Examples:"
+>   , "  {1,2} union {2,3}    - Set union"
+>   , "  {1,2} intersect {2,3} - Set intersection"
+>   , "  card({1,2,2})        - Count unique elements (returns 2)"
+>   , "  {1,2} subset {1,2,3} - Subset check (returns true)"
+>   ]
 
--- Help message
+-- Comprehensive help message
 
 > helpMsg :: String
 > helpMsg = unlines
->  [ "SET CALCULATOR HELP"
->  , "All operations must be typed in lowercase"
->  , ""
->  , "BASIC OPERATIONS:"
->  , "  {1, 2} union {2, 3}       - Set union"
->  , "  {1, 2} intersect {2, 3}   - Set intersection"
->  , "  {1, 2} minus {2}          - Set difference (A ∖ B)"
->  , "  {1, 2} symdiff {2, 3}     - Symmetric difference (A Δ B)"
->  , "  {1, 2} cross {3, 4}       - Cartesian product (returns encoded pairs)"
->  , ""
->  , "SET FUNCTIONS:"
->  , "  powerset({1, 2})          - Returns subset sizes {0,1,2}"
->  , "  cardinality({1, 2, 3})    - Returns number of elements"
->  , ""
->  , "SET TESTS:"
->  , "  {1} subset {1, 2}         - Returns 1.0 if true, 0.0 if false"
->  , "  2 in {1, 2, 3}            - Membership test"
->  , ""
->  , "EXAMPLES:"
->  , "  > {1,2} union {2,3}"
->  , "  > powerset({1,2})"
->  , "  > cardinality({1,2,3,4})"
->  , "  > 5 in {1,3,5}"
->  , ""
->  , "Type :quit to exit or :help to show this message again"
->  ]
+>   [ "SET CALCULATOR HELP"
+>   , ""
+>   , "BASIC OPERATIONS:"
+>   , "  A union B      - Elements in either A or B"
+>   , "  A intersect B  - Elements in both A and B"
+>   , "  A minus B      - Elements in A but not in B"
+>   , "  A symdiff B    - Elements in either A or B but not both"
+>   , "  A cross B      - Cartesian product of A and B"
+>   , ""
+>   , "SET FUNCTIONS:"
+>   , "  card(A)        - Number of unique elements in A"
+>   , "  powerset(A)    - All possible subsets of A"
+>   , "  A'             - Complement of A (requires universe)"
+>   , ""
+>   , "RELATIONAL OPERATIONS:"
+>   , "  A subset B     - true if all elements of A are in B"
+>   , "  x in A         - true if x is an element of A"
+>   , ""
+>   , "SPECIAL CASES:"
+>   , "  {}             - Empty set"
+>   , "  {1,2,3}       - Set containing elements 1, 2, and 3"
+>   , "  {{1,2},3}      - Set containing a nested set {1,2} and element 3"
+>   , ""
+>   , "EXAMPLES:"
+>   , "  card({1,2,2,3})          = 3"
+>   , "  {1,2} union {2,3}        = {1,2,3}"
+>   , "  {1,2} intersect {2,3}    = {2}"
+>   , "  {1,2,3} subset {1,2,3,4} = true"
+>   , "  powerset({1,2})          = {{},{1},{2},{1,2}}"
+>   , ""
+>   , "Type :quit to exit the calculator"
+>   ]
